@@ -22,7 +22,7 @@ LP radar dan rug shield untuk likuiditas Delta di Robinhood Chain. Data live dar
 ## Deploy ke Vercel
 
 1. vercel.com/new → pilih repo ini → **Deploy**. Tidak perlu setting apa pun.
-2. Buka URL-nya. Kalau muncul banner **SAMPLE DATA**, proxy belum bisa membaca DexScreener; buka `/api/dex?p=token-boosts%2Ftop%2Fv1` untuk melihat errornya.
+2. Buka URL-nya. ELTA tidak memakai data contoh: kalau data gagal dimuat, halaman menampilkan request mana yang gagal, kode errornya, dan link untuk membuka request itu. Kalau sebagian request gagal, muncul strip **PARTIAL DATA** di atas halaman dengan rinciannya.
 
 ## Sumber data
 

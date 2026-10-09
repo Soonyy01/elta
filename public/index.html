@@ -189,7 +189,7 @@ footer a{color:var(--mute)}
 </header>
 
 <div class="wrap">
-  <div class="banner" id="sampleBanner" hidden><b>SAMPLE DATA</b><span>Live market data is not reachable from this view, so every pool here is an invented example. Deployed with its proxy, ELTA reads Robinhood Chain pools live.</span></div>
+  <div class="banner" id="warn" role="status" hidden></div>
   <main id="view" aria-live="polite"></main>
   <footer>
     <span>ELTA · LP radar for Delta liquidity on Robinhood Chain</span>
@@ -208,7 +208,7 @@ const DROP_WATCH = 15, DROP_DANGER = 35;     // % liquidity fall that raises an 
 const LOOKBACK_MS = 60*60*1000;              // compare against the snapshot about an hour old
 const REFRESH_MS = 30000;
 
-const state = { mode:"loading", pairs:new Map(), tokens:new Set(), q:"", sort:"apr", dex:"all", minLiq:10000, tier:0.3, alerts:[], seenAlerts:new Set(), updatedAt:0 };
+const state = { failures:[], requests:0, mode:"loading", pairs:new Map(), tokens:new Set(), q:"", sort:"apr", dex:"all", minLiq:10000, tier:0.3, alerts:[], seenAlerts:new Set(), updatedAt:0 };
 
 /* ---------- storage (per browser) ---------- */
 function load(k, d){ try{ const v=localStorage.getItem("elta:"+k); return v?JSON.parse(v):d; }catch(e){ return d; } }
@@ -221,12 +221,17 @@ let notify = load("notify", false);
 for(const t of load("tokens", [])) state.tokens.add(t);
 
 /* ---------- data ---------- */
+function apiUrl(p){ return "/api/dex?p=" + encodeURIComponent(p); }
+function apiErr(p, status, detail){ const e=new Error(detail); e.path=p; e.status=status; return e; }
 async function api(p){
-  const r = await fetch("/api/dex?p=" + encodeURIComponent(p), { headers:{accept:"application/json"} });
-  if(!r.ok) throw new Error("HTTP "+r.status);
-  if(!(r.headers.get("content-type")||"").includes("json")) throw new Error("not json");
-  return r.json();
+  let r;
+  try{ r = await fetch(apiUrl(p), { headers:{accept:"application/json"} }); }
+  catch(e){ throw apiErr(p, "network", "Could not reach /api/dex: " + (e.message||e)); }
+  const text = await r.text();
+  if(!r.ok) throw apiErr(p, r.status, text.slice(0,240) || r.statusText);
+  try{ return JSON.parse(text); }catch(e){ throw apiErr(p, r.status, "Response is not JSON: " + text.slice(0,160)); }
 }
+function fail(e){ state.failures.push({ path:e.path||"?", status:e.status||"error", detail:e.message||String(e), at:Date.now() }); return []; }
 const arr = j => Array.isArray(j) ? j : (j && Array.isArray(j.pairs) ? j.pairs : []);
 function addPairs(list){
   for(const p of list){
@@ -235,7 +240,8 @@ function addPairs(list){
   }
 }
 async function discover(){
-  const lists = await Promise.all(["token-boosts/top/v1","token-boosts/latest/v1","token-profiles/latest/v1"].map(p=>api(p).catch(()=>[])));
+  state.requests+=3;
+  const lists = await Promise.all(["token-boosts/top/v1","token-boosts/latest/v1","token-profiles/latest/v1"].map(p=>api(p).catch(fail)));
   for(const l of lists) for(const t of arr(l)) if(t && t.chainId==="robinhood" && t.tokenAddress) state.tokens.add(t.tokenAddress);
   state.tokens.add(DELTA_TOKEN);
   for(const p of state.pairs.values()){ for(const tk of [p.baseToken,p.quoteToken]) if(tk && tk.address && !BASES.has(tk.address.toLowerCase())) state.tokens.add(tk.address); }
@@ -243,7 +249,8 @@ async function discover(){
 async function pull(){
   const toks=[...state.tokens].filter(t=>/^0x[a-fA-F0-9]{40}$/.test(t) && !BASES.has(t.toLowerCase()));
   const chunks=[]; for(let i=0;i<toks.length;i+=30) chunks.push(toks.slice(i,i+30));
-  const res = await Promise.all([api("token-pairs/v1/robinhood/"+DELTA_TOKEN).catch(()=>[]), ...chunks.map(c=>api("tokens/v1/robinhood/"+c.join(",")).catch(()=>[]))]);
+  state.requests+=1+chunks.length;
+  const res = await Promise.all([api("token-pairs/v1/robinhood/"+DELTA_TOKEN).catch(fail), ...chunks.map(c=>api("tokens/v1/robinhood/"+c.join(",")).catch(fail))]);
   for(const r of res) addPairs(arr(r));
 }
 
@@ -294,14 +301,6 @@ function scan(){
   }
 }
 
-/* ---------- sample (clearly labelled) ---------- */
-function sample(){
-  const now=Date.now(); const rows=[["HOOD","WETH",412000,1880000,"v3",3.1],["DELTA","WETH",1597000,2210000,"v4",-1.4],["GIGA","WETH",188000,640000,"v3",12.8],["ROBIN","USDG",96000,410000,"v2",-6.2],["FEATHER","WETH",54000,302000,"v3",22.5],["NOVA","WETH",31000,95000,"v4",-18.0],["TIDE","USDG",230000,170000,"v3",0.8],["MOOR","WETH",14000,61000,"v2",-35.1],["KELP","WETH",640000,520000,"v3",2.2],["SKIFF","USDG",8800,47000,"v4",4.0]];
-  return rows.map((r,i)=>({ chainId:"robinhood", dexId:i%3?"uniswap":"sushiswap", labels:[r[4]], pairAddress:"0x"+(i+1).toString(16).padStart(40,"b"), url:"https://dexscreener.com/robinhood",
-    baseToken:{address:"0x"+(i+1).toString(16).padStart(40,"c"),symbol:r[0],name:r[0]}, quoteToken:{address:"0x0bd7",symbol:r[1],name:r[1]},
-    priceUsd:String((0.0004*(i+1)).toFixed(6)), liquidity:{usd:r[2]}, volume:{m5:r[3]/250,h1:r[3]/22,h6:r[3]/4,h24:r[3]}, priceChange:{m5:r[5]/20,h1:r[5]/4,h6:r[5]/2,h24:r[5]},
-    txns:{m5:{buys:2+i,sells:1+i%3},h1:{buys:30+i*4,sells:22+i*3},h6:{buys:180+i*9,sells:150+i*7},h24:{buys:700+i*20,sells:640+i*18}}, pairCreatedAt: now-(i+1)*864e5*2.3, _sample:true }));
-}
 
 /* ---------- format ---------- */
 function fmt(n,d){ if(n==null||!isFinite(n)) return "—"; const a=Math.abs(n); if(a>=1e9) return (n/1e9).toFixed(2)+"B"; if(a>=1e6) return (n/1e6).toFixed(2)+"M"; if(a>=1e4) return (n/1e3).toFixed(1)+"K"; if(a>=1) return n.toLocaleString("en-US",{maximumFractionDigits:d??2}); if(a===0) return "0"; return n.toPrecision(3); }
@@ -335,29 +334,47 @@ function animate(root, entrance){
 
 /* ---------- boot ---------- */
 async function boot(){
+  state.failures=[]; state.requests=0;
   try{
     await discover(); await pull();
-    if(!state.pairs.size) throw new Error("empty");
-    state.mode="live";
-  }catch(e){
-    state.pairs.clear(); addPairs(sample()); state.mode="sample";
-    // give the sample a little history so Rug Shield has something to show
-    const now=Date.now(); for(const p of state.pairs.values()){ const k=p.pairAddress.toLowerCase(); const l=liq(p); const was = p.baseToken.symbol==="MOOR"?l*1.9:(p.baseToken.symbol==="NOVA"?l*1.25:l*1.02); snaps[k]=[[now-70*60000,Math.round(was)],[now-30*60000,Math.round((was+l)/2)]]; }
-  }
-  document.getElementById("sampleBanner").hidden = state.mode!=="sample";
-  save("tokens", [...state.tokens].slice(-300));
-  if(state.mode==="live") record();
-  scan(); state.updatedAt=Date.now(); route();
+    state.mode = state.pairs.size ? "live" : "error";
+  }catch(e){ fail(e); state.mode="error"; }
+  if(state.mode==="live"){ save("tokens", [...state.tokens].slice(-300)); record(); scan(); }
+  state.updatedAt=Date.now(); warn(); route();
 }
 async function refresh(){
   if(state.mode!=="live" || document.hidden) return;
+  state.failures=[]; state.requests=0;
   try{ await pull(); record(); scan(); state.updatedAt=Date.now();
     const h=page(); if(h==="radar"){ drawRows(false); stats(false); } else if(h==="shield") renderShield(document.getElementById("view"), false);
-  }catch(e){}
+  }catch(e){ fail(e); }
+  warn();
 }
 setInterval(refresh, REFRESH_MS);
 setInterval(()=>{ if(state.mode==="live" && !document.hidden && Date.now()-state.updatedAt>5*60000) discover().then(refresh).catch(()=>{}); }, 5*60000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && Date.now()-state.updatedAt>REFRESH_MS) refresh(); });
+
+/* ---------- errors: shown, never hidden ---------- */
+function failList(list){
+  return list.map(f=>`<li><code>${esc(f.path)}</code> → <b>${esc(String(f.status))}</b>: ${esc(f.detail)} · <a href="${esc(apiUrl(f.path))}" target="_blank" rel="noopener">open request ↗</a></li>`).join("");
+}
+function warn(){
+  const el=document.getElementById("warn");
+  if(state.mode!=="live" || !state.failures.length){ el.hidden=true; el.innerHTML=""; return; }
+  el.innerHTML=`<b>PARTIAL DATA</b><span>${state.failures.length} of ${state.requests} data requests failed at ${new Date(state.failures[0].at).toLocaleTimeString()}. Pools from those requests may be missing or stale.<ul style="margin:6px 0 0;padding-left:18px">${failList(state.failures)}</ul></span>`;
+  el.hidden=false;
+}
+function renderError(v){
+  const f=state.failures;
+  v.innerHTML=`<section class="head"><span class="label" style="color:var(--bad)">Live data unavailable</span><h1>ELTA could not load Robinhood Chain pools.</h1>
+    <p>${f.length?`${f.length} of ${state.requests||f.length} requests to the DexScreener relay failed. The details below show which request failed and what came back.`:"Every request succeeded, but DexScreener returned no Robinhood Chain pools."}</p></section>
+    ${f.length?`<section class="panel"><span class="label">Failed requests</span><ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px;font-size:14px;overflow-wrap:anywhere">${failList(f)}</ul></section>`:""}
+    <section class="panel"><span class="label">What to check</span><ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--mute)">
+      <li>Open a failed request above. A 404 means <code>api/dex.js</code> is not deployed; a 400 means the path is not on its allowlist; a 429 means DexScreener is rate limiting; a 502 means DexScreener did not answer.</li>
+      <li>On Vercel, check the project's Functions logs for <code>/api/dex</code>.</li></ul>
+      <div class="actions"><button class="btn primary" type="button" id="retry">Try again</button></div></section>`;
+  v.querySelector("#retry").addEventListener("click",()=>{ state.mode="loading"; route(); boot(); });
+}
 
 /* ---------- router ---------- */
 function page(){ const h=(location.hash||"#radar").slice(1); return h.startsWith("pool-")?"pool":(["radar","shield","next"].includes(h)?h:"radar"); }
@@ -365,6 +382,7 @@ function route(){
   const pg=page(), v=document.getElementById("view");
   document.querySelectorAll("[data-nav]").forEach(a=>{ const on=a.dataset.nav===pg||(pg==="pool"&&a.dataset.nav==="radar"); on?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current"); });
   if(state.mode==="loading"){ v.innerHTML=`<p class="empty">Reading Robinhood Chain pools…</p>`; return; }
+  if(state.mode==="error"){ renderError(v); return; }
   if(pg==="radar") renderRadar(v);
   else if(pg==="pool") renderPool(v, decodeURIComponent(location.hash.slice(6)));
   else if(pg==="shield") renderShield(v);
@@ -421,7 +439,7 @@ function renderRadar(v){
   let timer=null;
   v.querySelector("#q").addEventListener("input",e=>{ state.q=e.target.value; drawRows(false); stats(false);
     clearTimeout(timer); const q=state.q.trim().replace(/[^\w .$-]/g,""); if(state.mode!=="live"||q.length<2) return;
-    timer=setTimeout(async()=>{ try{ const j=await api("latest/dex/search?q="+encodeURIComponent(q)); const before=state.pairs.size; addPairs(arr(j)); for(const p of arr(j)) if(p.chainId==="robinhood" && p.baseToken && !BASES.has(p.baseToken.address.toLowerCase())) state.tokens.add(p.baseToken.address); save("tokens",[...state.tokens].slice(-300)); if(state.pairs.size!==before){ record(); drawRows(false); stats(false); } }catch(err){} },400); });
+    timer=setTimeout(async()=>{ try{ const j=await api("latest/dex/search?q="+encodeURIComponent(q)); const before=state.pairs.size; addPairs(arr(j)); for(const p of arr(j)) if(p.chainId==="robinhood" && p.baseToken && !BASES.has(p.baseToken.address.toLowerCase())) state.tokens.add(p.baseToken.address); save("tokens",[...state.tokens].slice(-300)); if(state.pairs.size!==before){ record(); drawRows(false); stats(false); } }catch(err){ state.failures=[]; state.requests=1; fail(err); warn(); } },400); });
   v.querySelector("#sort").addEventListener("change",e=>{ state.sort=e.target.value; sync(); drawRows(); });
   v.querySelector("#minliq").addEventListener("change",e=>{ state.minLiq=+e.target.value; sync(); drawRows(); stats(false); });
   v.querySelectorAll("[data-dex]").forEach(b=>b.addEventListener("click",()=>{ state.dex=b.dataset.dex; sync(); drawRows(); stats(false); }));
@@ -455,7 +473,7 @@ function renderPool(v, k){
   const t24=txn(p,"h24"), buyShare=t24.b+t24.s?t24.b/(t24.b+t24.s)*100:50;
   v.innerHTML=`
   <a class="back" href="#radar">← Yield Radar</a>
-  <section class="head"><span class="label">${esc(p.dexId)} ${esc((p.labels||[]).join(" "))} · Robinhood Chain${p._sample?" · sample":""}</span><h1>${esc(name(p))}</h1><p>${esc(p.baseToken.name||"")}</p></section>
+  <section class="head"><span class="label">${esc(p.dexId)} ${esc((p.labels||[]).join(" "))} · Robinhood Chain</span><h1>${esc(name(p))}</h1><p>${esc(p.baseToken.name||"")}</p></section>
   <div class="prof">
     <div style="display:flex;flex-direction:column;gap:20px;min-width:0">
       <section class="panel"><span class="label">Estimated fee APR at ${state.tier}% tier</span><div class="big">${N(a,"apr")}<small>${fmt(turnover(p),2)}× daily turnover</small></div>
