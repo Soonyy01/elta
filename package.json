@@ -1,0 +1,8 @@
+{
+  "name": "elta",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ELTA: LP radar and rug shield for Delta liquidity on Robinhood Chain",
+  "engines": { "node": ">=18" }
+}
